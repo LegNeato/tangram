@@ -48,7 +48,7 @@ fn main() {
 			..Default::default()
 		},
 		Progress {
-			kill_chip: &tangram_kill_chip::KillChip::default(),
+			kill_chip: Some(&tangram_kill_chip::KillChip::default()),
 			handle_progress_event: &mut |_| {},
 		},
 	);

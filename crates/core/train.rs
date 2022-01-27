@@ -18,6 +18,7 @@ use crate::{
 	test,
 };
 use anyhow::{anyhow, bail, Result};
+use arrow2::array::ArrayRef;
 use ndarray::prelude::*;
 use num::ToPrimitive;
 use rand::{seq::SliceRandom, SeedableRng};
@@ -41,6 +42,10 @@ pub enum TrainingDataSource {
 	TrainAndTest {
 		train: std::path::PathBuf,
 		test: std::path::PathBuf,
+	},
+	ArrowArrays {
+		arrays: Vec<ArrayRef>,
+		column_names: Vec<String>,
 	},
 }
 
@@ -66,14 +71,12 @@ pub struct Trainer {
 
 impl Trainer {
 	pub fn prepare(
-		id: Id,
 		input: TrainingDataSource,
 		target_column_name: &str,
-		config_path: Option<&Path>,
+		config: Config,
 		handle_progress_event: &mut dyn FnMut(ProgressEvent),
 	) -> Result<Trainer> {
-		// Load the config from the config file, if provided.
-		let config = load_config(config_path)?;
+		let id = tangram_id::Id::generate();
 
 		// Load the train and test tables from the csv file(s).
 		let dataset = match input {
@@ -97,6 +100,16 @@ impl Trainer {
 					handle_progress_event,
 				)?)
 			}
+			TrainingDataSource::ArrowArrays {
+				arrays,
+				column_names,
+			} => Dataset::Train(load_and_shuffle_dataset_arrow_arrays(
+				arrays,
+				column_names,
+				&config,
+				target_column_name,
+				handle_progress_event,
+			)?),
 		};
 		let (table_train, table_comparison, table_test) = dataset.split();
 
@@ -237,7 +250,7 @@ impl Trainer {
 	/// Train each model in the grid and compute comparison metrics.
 	pub fn train_grid(
 		&mut self,
-		kill_chip: &KillChip,
+		kill_chip: Option<&KillChip>,
 		handle_progress_event: &mut dyn FnMut(ProgressEvent),
 	) -> Result<Vec<TrainGridItemOutput>> {
 		let (table_train, table_comparison, _) = self.dataset.split();
@@ -247,7 +260,7 @@ impl Trainer {
 			.iter()
 			.cloned()
 			.enumerate()
-			.take_while(|_| !kill_chip.is_activated())
+			.take_while(|_| !kill_chip.map(|k| k.is_activated()).unwrap_or(false))
 			.map(|(grid_item_index, grid_item)| {
 				train_grid_item(
 					grid.len(),
@@ -577,7 +590,7 @@ impl Trainer {
 	}
 }
 
-fn load_config(config_path: Option<&Path>) -> Result<Config> {
+pub fn load_config(config_path: Option<&Path>) -> Result<Config> {
 	if let Some(config_path) = config_path {
 		let config = std::fs::read_to_string(config_path)?;
 		let extension = config_path.extension().and_then(|s| s.to_str());
@@ -705,7 +718,7 @@ fn load_and_shuffle_dataset_stdin(
 	// Get the column types from the config, if set.
 	let mut table = Table::from_bytes(
 		&buf,
-		tangram_table::FromCsvOptions {
+		tangram_table::Options {
 			column_types: column_types_from_config(config),
 			infer_options: Default::default(),
 			..Default::default()
@@ -737,7 +750,7 @@ fn load_and_shuffle_dataset_train(
 	// Get the column types from the config, if set.
 	let mut table = Table::from_path(
 		file_path,
-		tangram_table::FromCsvOptions {
+		tangram_table::Options {
 			column_types: column_types_from_config(config),
 			infer_options: Default::default(),
 			..Default::default()
@@ -771,7 +784,7 @@ fn load_and_shuffle_dataset_train_and_test(
 	let column_types = column_types_from_config(config);
 	let mut table_train = Table::from_path(
 		file_path_train,
-		tangram_table::FromCsvOptions {
+		tangram_table::Options {
 			column_types,
 			infer_options: Default::default(),
 			..Default::default()
@@ -804,7 +817,7 @@ fn load_and_shuffle_dataset_train_and_test(
 		.collect();
 	let mut table_test = Table::from_path(
 		file_path_test,
-		tangram_table::FromCsvOptions {
+		tangram_table::Options {
 			column_types: Some(column_types),
 			infer_options: Default::default(),
 			..Default::default()
@@ -846,6 +859,37 @@ fn column_types_from_config(config: &Config) -> Option<BTreeMap<String, TableCol
 			})
 			.collect(),
 	)
+}
+
+fn load_and_shuffle_dataset_arrow_arrays(
+	arrays: Vec<ArrayRef>,
+	column_names: Vec<String>,
+	config: &Config,
+	target_column_name: &str,
+	handle_progress_event: &mut dyn FnMut(ProgressEvent),
+) -> Result<DatasetTrain> {
+	let column_types = column_types_from_config(config);
+	let mut table = tangram_table::Table::from_arrow_arrays(
+		column_names,
+		arrays,
+		tangram_table::Options {
+			column_types,
+			infer_options: Default::default(),
+			..Default::default()
+		},
+		&mut |_| {},
+	)
+	.unwrap();
+	// Drop any rows with invalid data in the target column
+	drop_invalid_target_rows(&mut table, target_column_name, handle_progress_event);
+	// Shuffle the table if enabled.
+	shuffle_table(&mut table, config, handle_progress_event);
+	// Split the table into train and test tables.
+	Ok(DatasetTrain {
+		table,
+		comparison_fraction: config.dataset.comparison_fraction,
+		test_fraction: config.dataset.test_fraction,
+	})
 }
 
 /// Shuffle the table.
@@ -1008,6 +1052,7 @@ fn compute_baseline_metrics(
 	}
 }
 
+#[derive(Debug)]
 pub struct TrainGridItemOutput {
 	pub train_model_output: TrainModelOutput,
 	pub comparison_metrics: Metrics,
@@ -1023,7 +1068,7 @@ fn train_grid_item(
 	table_train: &TableView,
 	table_comparison: &TableView,
 	comparison_metric: ComparisonMetric,
-	kill_chip: &KillChip,
+	kill_chip: Option<&KillChip>,
 	handle_progress_event: &mut dyn FnMut(ProgressEvent),
 ) -> TrainGridItemOutput {
 	let start = Instant::now();
@@ -1174,7 +1219,7 @@ pub struct TreeMulticlassClassifierTrainModelOutput {
 fn train_model(
 	grid_item: grid::GridItem,
 	table_train: &TableView,
-	kill_chip: &KillChip,
+	kill_chip: Option<&KillChip>,
 	handle_progress_event: &mut dyn FnMut(TrainGridItemProgressEvent),
 ) -> TrainModelOutput {
 	match grid_item {
@@ -1258,7 +1303,7 @@ fn train_linear_regressor(
 	target_column_index: usize,
 	feature_groups: Vec<tangram_features::FeatureGroup>,
 	options: grid::LinearModelTrainOptions,
-	kill_chip: &KillChip,
+	kill_chip: Option<&KillChip>,
 	handle_progress_event: &mut dyn FnMut(TrainGridItemProgressEvent),
 ) -> TrainModelOutput {
 	let n_features = feature_groups.iter().map(|f| f.n_features()).sum::<usize>();
@@ -1306,7 +1351,7 @@ fn train_tree_regressor(
 	target_column_index: usize,
 	feature_groups: Vec<tangram_features::FeatureGroup>,
 	options: grid::TreeModelTrainOptions,
-	kill_chip: &KillChip,
+	kill_chip: Option<&KillChip>,
 	handle_progress_event: &mut dyn FnMut(TrainGridItemProgressEvent),
 ) -> TrainModelOutput {
 	let n_features = feature_groups.iter().map(|f| f.n_features()).sum::<usize>();
@@ -1354,7 +1399,7 @@ fn train_linear_binary_classifier(
 	target_column_index: usize,
 	feature_groups: Vec<tangram_features::FeatureGroup>,
 	options: grid::LinearModelTrainOptions,
-	kill_chip: &KillChip,
+	kill_chip: Option<&KillChip>,
 	handle_progress_event: &mut dyn FnMut(TrainGridItemProgressEvent),
 ) -> TrainModelOutput {
 	let n_features = feature_groups.iter().map(|f| f.n_features()).sum::<usize>();
@@ -1402,7 +1447,7 @@ fn train_tree_binary_classifier(
 	target_column_index: usize,
 	feature_groups: Vec<tangram_features::FeatureGroup>,
 	options: grid::TreeModelTrainOptions,
-	kill_chip: &KillChip,
+	kill_chip: Option<&KillChip>,
 	handle_progress_event: &mut dyn FnMut(TrainGridItemProgressEvent),
 ) -> TrainModelOutput {
 	let n_features = feature_groups.iter().map(|f| f.n_features()).sum::<usize>();
@@ -1450,7 +1495,7 @@ fn train_linear_multiclass_classifier(
 	target_column_index: usize,
 	feature_groups: Vec<tangram_features::FeatureGroup>,
 	options: grid::LinearModelTrainOptions,
-	kill_chip: &KillChip,
+	kill_chip: Option<&KillChip>,
 	handle_progress_event: &mut dyn FnMut(TrainGridItemProgressEvent),
 ) -> TrainModelOutput {
 	let n_features = feature_groups.iter().map(|f| f.n_features()).sum::<usize>();
@@ -1502,7 +1547,7 @@ fn train_tree_multiclass_classifier(
 	target_column_index: usize,
 	feature_groups: Vec<tangram_features::FeatureGroup>,
 	options: grid::TreeModelTrainOptions,
-	kill_chip: &KillChip,
+	kill_chip: Option<&KillChip>,
 	handle_progress_event: &mut dyn FnMut(TrainGridItemProgressEvent),
 ) -> TrainModelOutput {
 	let n_features = feature_groups.iter().map(|f| f.n_features()).sum::<usize>();

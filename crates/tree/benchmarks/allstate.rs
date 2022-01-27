@@ -546,7 +546,7 @@ fn main() {
 	.iter()
 	.map(ToString::to_string)
 	.collect();
-	let options = tangram_table::FromCsvOptions {
+	let options = tangram_table::Options {
 		column_types: Some(BTreeMap::from([
 			("row_id".to_owned(), TableColumnType::Number),
 			("household_id".to_owned(), TableColumnType::Number),
@@ -691,7 +691,7 @@ fn main() {
 		labels_train.view(),
 		&train_options,
 		Progress {
-			kill_chip: &tangram_kill_chip::KillChip::default(),
+			kill_chip: Some(&tangram_kill_chip::KillChip::default()),
 			handle_progress_event: &mut |_| {},
 		},
 	);

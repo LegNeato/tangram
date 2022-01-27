@@ -125,7 +125,11 @@ impl MulticlassClassifier {
 				}
 			}
 			// Check if we should stop training.
-			if progress.kill_chip.is_activated() {
+			if progress
+				.kill_chip
+				.map(|k| k.is_activated())
+				.unwrap_or(false)
+			{
 				break;
 			}
 		}
@@ -164,9 +168,9 @@ impl MulticlassClassifier {
 		labels: ArrayView1<Option<NonZeroUsize>>,
 		mut probabilities: ArrayViewMut2<f32>,
 		train_options: &TrainOptions,
-		kill_chip: &tangram_kill_chip::KillChip,
+		kill_chip: Option<&tangram_kill_chip::KillChip>,
 	) {
-		if kill_chip.is_activated() {
+		if kill_chip.map(|k| k.is_activated()).unwrap_or(false) {
 			return;
 		}
 		let learning_rate = train_options.learning_rate;

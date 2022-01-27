@@ -91,7 +91,7 @@ fn main() {
 	.iter()
 	.map(ToString::to_string)
 	.collect();
-	let options = tangram_table::FromCsvOptions {
+	let options = tangram_table::Options {
 		column_types: Some(BTreeMap::from([
 			(
 				"month".to_owned(),
@@ -183,7 +183,7 @@ fn main() {
 			..Default::default()
 		},
 		Progress {
-			kill_chip: &tangram_kill_chip::KillChip::default(),
+			kill_chip: Some(&tangram_kill_chip::KillChip::default()),
 			handle_progress_event: &mut |_| {},
 		},
 	);

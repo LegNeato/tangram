@@ -30,7 +30,7 @@ mod train;
 mod train_tree;
 
 pub struct Progress<'a> {
-	pub kill_chip: &'a tangram_kill_chip::KillChip,
+	pub kill_chip: Option<&'a tangram_kill_chip::KillChip>,
 	pub handle_progress_event: &'a mut dyn FnMut(TrainProgressEvent),
 }
 

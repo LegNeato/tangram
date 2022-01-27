@@ -149,7 +149,7 @@ fn main() {
 	.map(ToString::to_string)
 	.collect();
 	let income_variants = ["<=50K", ">50K"].iter().map(ToString::to_string).collect();
-	let options = tangram_table::FromCsvOptions {
+	let options = tangram_table::Options {
 		column_types: Some(BTreeMap::from([
 			("age".to_owned(), TableColumnType::Number),
 			(
@@ -235,7 +235,7 @@ fn main() {
 		labels_train.view(),
 		&train_options,
 		Progress {
-			kill_chip: &tangram_kill_chip::KillChip::default(),
+			kill_chip: Some(&tangram_kill_chip::KillChip::default()),
 			handle_progress_event: &mut |_| {},
 		},
 	);

@@ -16,6 +16,7 @@ path = "lib.rs"
 
 [dependencies]
 anyhow = { version = "1", features = ["backtrace"] }
+arrow2 =  "0.9.0"
 bitvec = "1"
 buffalo = { version = "0.3", features = ["bitvec", "ndarray_0_15"] }
 chrono = { version = "0.4", features = ["serde"] }

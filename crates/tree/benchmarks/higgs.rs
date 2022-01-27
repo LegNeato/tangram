@@ -12,7 +12,7 @@ fn main() {
 	let csv_file_path_test = Path::new("data/higgs_test.csv");
 	let target_column_index = 0;
 	let signal_variants = ["false", "true"].iter().map(ToString::to_string).collect();
-	let options = tangram_table::FromCsvOptions {
+	let options = tangram_table::Options {
 		column_types: Some(BTreeMap::from([
 			(
 				"signal".to_owned(),
@@ -76,7 +76,7 @@ fn main() {
 		labels_train.view(),
 		&train_options,
 		Progress {
-			kill_chip: &tangram_kill_chip::KillChip::default(),
+			kill_chip: Some(&tangram_kill_chip::KillChip::default()),
 			handle_progress_event: &mut |_| {},
 		},
 	);

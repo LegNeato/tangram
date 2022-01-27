@@ -1,6 +1,7 @@
 use anyhow::anyhow;
+use arrow2::{array::ArrayRef, ffi};
 use memmap::Mmap;
-use pyo3::{prelude::*, type_object::PyTypeObject, types::PyType};
+use pyo3::{ffi::Py_uintptr_t, prelude::*, type_object::PyTypeObject, types::PyType, FromPyObject};
 use std::collections::BTreeMap;
 use url::Url;
 
@@ -22,6 +23,7 @@ fn tangram(py: Python, m: &PyModule) -> PyResult<()> {
 	m.add_class::<BagOfWordsFeatureContribution>()?;
 	m.add_class::<BagOfWordsCosineSimilarityFeatureContribution>()?;
 	m.add_class::<WordEmbeddingFeatureContribution>()?;
+	// m.add_function(wrap_pyfunction!(train_inner, m)?)?;
 	m.add("PredictInput", predict_input(py)?)?;
 	m.add("PredictOutput", predict_output(py)?)?;
 	m.add("FeatureContributionEntry", feature_contribution_entry(py)?)?;
@@ -951,5 +953,496 @@ impl std::fmt::Display for TangramError {
 impl From<TangramError> for PyErr {
 	fn from(error: TangramError) -> PyErr {
 		PyErr::new::<pyo3::exceptions::PyTypeError, _>(error.to_string())
+	}
+}
+
+#[derive(Clone, Debug)]
+enum ColumnType {
+	Number(NumberColumn),
+	Enum(EnumColumn),
+	Text(TextColumn),
+}
+
+impl ColumnType {
+	fn name(&self) -> &str {
+		match self {
+			ColumnType::Number(c) => &c.name,
+			ColumnType::Enum(c) => &c.name,
+			ColumnType::Text(c) => &c.name,
+		}
+	}
+}
+
+#[derive(FromPyObject, Clone, Debug)]
+struct NumberColumn {
+	name: String,
+}
+
+#[derive(FromPyObject, Clone, Debug)]
+struct EnumColumn {
+	name: String,
+	variants: Vec<String>,
+}
+
+#[derive(FromPyObject, Clone, Debug)]
+struct TextColumn {
+	name: String,
+}
+
+impl<'source> FromPyObject<'source> for ColumnType {
+	fn extract(ob: &'source PyAny) -> PyResult<Self> {
+		let ty: &str = ob.get_item("type")?.extract()?;
+		let name: String = ob.get_item("name")?.extract()?;
+		match ty {
+			"number" => Ok(ColumnType::Number(NumberColumn { name })),
+			"text" => Ok(ColumnType::Text(TextColumn { name })),
+			"enum" => {
+				let variants: Vec<String> = ob.get_item("variants")?.extract()?;
+				Ok(ColumnType::Enum(EnumColumn { name, variants }))
+			}
+			&_ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+				"invalid variant type {}",
+				ty,
+			))),
+		}
+	}
+}
+
+impl Into<tangram_core::config::Column> for ColumnType {
+	fn into(self) -> tangram_core::config::Column {
+		match self {
+			ColumnType::Number(column) => {
+				tangram_core::config::Column::Number(tangram_core::config::NumberColumn {
+					name: column.name,
+				})
+			}
+			ColumnType::Enum(column) => {
+				tangram_core::config::Column::Enum(tangram_core::config::EnumColumn {
+					name: column.name,
+					variants: column.variants,
+				})
+			}
+			ColumnType::Text(column) => {
+				tangram_core::config::Column::Text(tangram_core::config::TextColumn {
+					name: column.name,
+				})
+			}
+		}
+	}
+}
+
+#[derive(Clone)]
+pub struct FromArrowOptions<'a> {
+	pub column_types: Option<BTreeMap<String, tangram_table::TableColumnType>>,
+	pub infer_options: tangram_table::InferOptions,
+	pub invalid_values: &'a [&'a str],
+}
+
+impl<'a> Default for FromArrowOptions<'a> {
+	fn default() -> Self {
+		Self {
+			column_types: Default::default(),
+			infer_options: Default::default(),
+			invalid_values: Default::default(),
+		}
+	}
+}
+
+#[pyfunction]
+fn train_inner(
+	arrow_arrays: Vec<(String, &PyAny)>,
+	target: String,
+	column_types: Option<Vec<ColumnType>>,
+	shuffle_enabled: Option<bool>,
+	shuffle_seed: Option<u64>,
+	test_fraction: Option<f32>,
+	comparison_fraction: Option<f32>,
+	autogrid: Option<AutoGridOptions>,
+	grid: Option<Vec<GridItem>>,
+	comparison_metric: Option<ComparisonMetric>,
+) -> Model {
+	// Construct the dataset
+	let column_names = arrow_arrays
+		.iter()
+		.map(|(name, _)| name.to_owned())
+		.collect::<Vec<_>>();
+	let arrays = arrow_arrays
+		.into_iter()
+		.map(|(_, array)| array_to_rust(array).unwrap())
+		.collect::<Vec<_>>();
+	let dataset = tangram_core::train::TrainingDataSource::ArrowArrays {
+		arrays,
+		column_names,
+	};
+
+	// Construct the config options
+	let column_types: Option<Vec<tangram_core::config::Column>> =
+		column_types.map(|column_config| {
+			column_config
+				.into_iter()
+				.map(|column| column.into())
+				.collect()
+		});
+	let mut dataset_config = tangram_core::config::Dataset::default();
+	dataset_config.columns = column_types.unwrap_or_default();
+	if let Some(shuffle_seed) = shuffle_seed {
+		dataset_config.shuffle.seed = shuffle_seed
+	}
+	if let Some(shuffle_enabled) = shuffle_enabled {
+		dataset_config.shuffle.enable = shuffle_enabled
+	}
+	if let Some(test_fraction) = test_fraction {
+		dataset_config.test_fraction = test_fraction
+	}
+	if let Some(comparison_fraction) = comparison_fraction {
+		dataset_config.comparison_fraction = comparison_fraction
+	}
+
+	let config = tangram_core::config::Config {
+		dataset: dataset_config,
+		features: Default::default(),
+		train: tangram_core::config::Train {
+			autogrid: autogrid.map(Into::into),
+			grid: grid.map(|grid| grid.into_iter().map(Into::into).collect::<Vec<_>>()),
+			comparison_metric: comparison_metric.map(Into::into),
+		},
+	};
+	let mut trainer =
+		tangram_core::train::Trainer::prepare(dataset, &target, config, &mut |_| {}).unwrap();
+	let train_grid_item_outputs = trainer.train_grid(None, &mut |_| {}).unwrap();
+	let model = trainer
+		.test_and_assemble_model(train_grid_item_outputs, &mut |_| {})
+		.unwrap();
+	match &model.inner {
+		tangram_core::model::ModelInner::Regressor(_) => todo!(),
+		tangram_core::model::ModelInner::BinaryClassifier(m) => {
+			dbg!(m.test_metrics.auc_roc_approx);
+		}
+		tangram_core::model::ModelInner::MulticlassClassifier(_) => todo!(),
+	}
+	todo!()
+}
+
+#[derive(Debug, FromPyObject)]
+struct AutoGridOptions {
+	model_types: Vec<ModelType>,
+}
+
+impl Into<tangram_core::config::AutoGridOptions> for AutoGridOptions {
+	fn into(self) -> tangram_core::config::AutoGridOptions {
+		tangram_core::config::AutoGridOptions {
+			model_types: Some(
+				self.model_types
+					.into_iter()
+					.map(|item| item.into())
+					.collect(),
+			),
+		}
+	}
+}
+
+#[derive(Debug)]
+enum ModelType {
+	Linear,
+	Tree,
+}
+
+impl<'source> FromPyObject<'source> for ModelType {
+	fn extract(ob: &'source PyAny) -> PyResult<Self> {
+		let ty: &str = ob.get_item("type")?.extract()?;
+		match ty {
+			"linear" => Ok(ModelType::Linear),
+			"tree" => Ok(ModelType::Tree),
+			&_ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+				"invalid variant type {}",
+				ty,
+			))),
+		}
+	}
+}
+
+impl Into<tangram_core::config::ModelType> for ModelType {
+	fn into(self) -> tangram_core::config::ModelType {
+		match self {
+			ModelType::Linear => tangram_core::config::ModelType::Linear,
+			ModelType::Tree => tangram_core::config::ModelType::Tree,
+		}
+	}
+}
+
+#[derive(Debug)]
+enum GridItem {
+	Tree(TreeGridItem),
+	Linear(LinearGridItem),
+}
+
+impl<'source> FromPyObject<'source> for GridItem {
+	fn extract(ob: &'source PyAny) -> PyResult<Self> {
+		let ty: &str = ob.get_item("type")?.extract()?;
+		match ty {
+			"linear" => Ok(GridItem::Linear(ob.extract().unwrap())),
+			"tree" => Ok(GridItem::Tree(ob.extract().unwrap())),
+			&_ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+				"invalid variant type {}",
+				ty,
+			))),
+		}
+	}
+}
+
+impl Into<tangram_core::config::GridItem> for GridItem {
+	fn into(self) -> tangram_core::config::GridItem {
+		match self {
+			GridItem::Tree(item) => tangram_core::config::GridItem::Tree(item.into()),
+			GridItem::Linear(item) => tangram_core::config::GridItem::Linear(item.into()),
+		}
+	}
+}
+
+#[derive(Default, Debug)]
+struct LinearGridItem {
+	early_stopping_options: Option<EarlyStoppingOptions>,
+	l2_regularization: Option<f32>,
+	learning_rate: Option<f32>,
+	max_epochs: Option<u64>,
+	n_examples_per_batch: Option<u64>,
+}
+
+impl<'source> FromPyObject<'source> for LinearGridItem {
+	fn extract(ob: &'source PyAny) -> PyResult<Self> {
+		let mut linear_grid_item: LinearGridItem = Default::default();
+		if let Ok(item) = ob.get_item("early_stopping_options") {
+			linear_grid_item.early_stopping_options = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("l2_regularization") {
+			linear_grid_item.l2_regularization = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("learning_rate") {
+			linear_grid_item.learning_rate = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("max_epochs") {
+			linear_grid_item.max_epochs = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("n_examples_per_batch") {
+			linear_grid_item.n_examples_per_batch = Some(item.extract().unwrap());
+		}
+		Ok(linear_grid_item)
+	}
+}
+
+impl Into<tangram_core::config::LinearGridItem> for LinearGridItem {
+	fn into(self) -> tangram_core::config::LinearGridItem {
+		tangram_core::config::LinearGridItem {
+			early_stopping_options: self.early_stopping_options.map(Into::into),
+			l2_regularization: self.l2_regularization.map(Into::into),
+			learning_rate: self.learning_rate,
+			max_epochs: self.max_epochs,
+			n_examples_per_batch: self.n_examples_per_batch.map(Into::into),
+		}
+	}
+}
+
+#[derive(Default, Debug)]
+struct TreeGridItem {
+	binned_features_layout: Option<BinnedFeaturesLayout>,
+	early_stopping_options: Option<EarlyStoppingOptions>,
+	l2_regularization_for_continuous_splits: Option<f32>,
+	l2_regularization_for_discrete_splits: Option<f32>,
+	learning_rate: Option<f32>,
+	max_depth: Option<u64>,
+	max_examples_for_computing_bin_thresholds: Option<u64>,
+	max_leaf_nodes: Option<u64>,
+	max_rounds: Option<u64>,
+	max_valid_bins_for_number_features: Option<u8>,
+	min_examples_per_node: Option<u64>,
+	min_gain_to_split: Option<f32>,
+	min_sum_hessians_per_node: Option<f32>,
+	smoothing_factor_for_discrete_bin_sorting: Option<f32>,
+}
+
+impl<'source> FromPyObject<'source> for TreeGridItem {
+	fn extract(ob: &'source PyAny) -> PyResult<Self> {
+		let mut tree_grid_item: TreeGridItem = Default::default();
+		if let Ok(item) = ob.get_item("binned_features_layout") {
+			tree_grid_item.binned_features_layout = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("early_stopping_options") {
+			tree_grid_item.early_stopping_options = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("l2_regularization_for_continuous_splits") {
+			tree_grid_item.l2_regularization_for_continuous_splits = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("l2_regularization_for_discrete_splits") {
+			tree_grid_item.l2_regularization_for_discrete_splits = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("learning_rate") {
+			tree_grid_item.learning_rate = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("max_depth") {
+			tree_grid_item.max_depth = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("max_examples_for_computing_bin_thresholds") {
+			tree_grid_item.max_examples_for_computing_bin_thresholds =
+				Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("max_leaf_nodes") {
+			tree_grid_item.max_leaf_nodes = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("max_rounds") {
+			tree_grid_item.max_rounds = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("max_valid_bins_for_number_features") {
+			tree_grid_item.max_valid_bins_for_number_features = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("min_examples_per_node") {
+			tree_grid_item.min_examples_per_node = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("min_gain_to_split") {
+			tree_grid_item.min_gain_to_split = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("min_sum_hessians_per_node") {
+			tree_grid_item.min_sum_hessians_per_node = Some(item.extract().unwrap());
+		}
+		if let Ok(item) = ob.get_item("smoothing_factor_for_discrete_bin_sorting") {
+			tree_grid_item.smoothing_factor_for_discrete_bin_sorting =
+				Some(item.extract().unwrap());
+		}
+		Ok(tree_grid_item)
+	}
+}
+
+impl Into<tangram_core::config::TreeGridItem> for TreeGridItem {
+	fn into(self) -> tangram_core::config::TreeGridItem {
+		tangram_core::config::TreeGridItem {
+			binned_features_layout: self.binned_features_layout.map(Into::into),
+			early_stopping_options: self.early_stopping_options.map(Into::into),
+			l2_regularization_for_continuous_splits: self.l2_regularization_for_continuous_splits,
+			l2_regularization_for_discrete_splits: self.l2_regularization_for_discrete_splits,
+			learning_rate: self.learning_rate,
+			max_depth: self.max_depth,
+			max_examples_for_computing_bin_thresholds: self
+				.max_examples_for_computing_bin_thresholds,
+			max_leaf_nodes: self.max_leaf_nodes,
+			max_rounds: self.max_rounds,
+			max_valid_bins_for_number_features: self.max_valid_bins_for_number_features,
+			min_examples_per_node: self.min_examples_per_node,
+			min_gain_to_split: self.min_gain_to_split,
+			min_sum_hessians_per_node: self.min_sum_hessians_per_node,
+			smoothing_factor_for_discrete_bin_sorting: self
+				.smoothing_factor_for_discrete_bin_sorting,
+		}
+	}
+}
+
+#[derive(Debug)]
+enum BinnedFeaturesLayout {
+	RowMajor,
+	ColumnMajor,
+}
+
+impl<'source> FromPyObject<'source> for BinnedFeaturesLayout {
+	fn extract(ob: &'source PyAny) -> PyResult<Self> {
+		let ty: &str = ob.extract()?;
+		match ty {
+			"row_major" => Ok(BinnedFeaturesLayout::RowMajor),
+			"column_major" => Ok(BinnedFeaturesLayout::ColumnMajor),
+			&_ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+				"invalid variant type {}",
+				ty,
+			))),
+		}
+	}
+}
+
+impl Into<tangram_core::config::BinnedFeaturesLayout> for BinnedFeaturesLayout {
+	fn into(self) -> tangram_core::config::BinnedFeaturesLayout {
+		match self {
+			BinnedFeaturesLayout::RowMajor => tangram_core::config::BinnedFeaturesLayout::RowMajor,
+			BinnedFeaturesLayout::ColumnMajor => {
+				tangram_core::config::BinnedFeaturesLayout::ColumnMajor
+			}
+		}
+	}
+}
+
+#[derive(FromPyObject, Debug)]
+struct EarlyStoppingOptions {
+	early_stopping_fraction: f32,
+	n_rounds_without_improvement_to_stop: usize,
+	min_decrease_in_loss_for_significant_change: f32,
+}
+
+impl Into<tangram_core::config::EarlyStoppingOptions> for EarlyStoppingOptions {
+	fn into(self) -> tangram_core::config::EarlyStoppingOptions {
+		tangram_core::config::EarlyStoppingOptions {
+			early_stopping_fraction: self.early_stopping_fraction,
+			n_rounds_without_improvement_to_stop: self.n_rounds_without_improvement_to_stop,
+			min_decrease_in_loss_for_significant_change: self
+				.min_decrease_in_loss_for_significant_change,
+		}
+	}
+}
+
+#[derive(Debug)]
+enum ComparisonMetric {
+	Mae,
+	Mse,
+	Rmse,
+	R2,
+	Accuracy,
+	Auc,
+	F1,
+}
+
+impl<'source> FromPyObject<'source> for ComparisonMetric {
+	fn extract(ob: &'source PyAny) -> PyResult<Self> {
+		let ty: &str = ob.extract()?;
+		match ty {
+			"mae" => Ok(ComparisonMetric::Mae),
+			"mse" => Ok(ComparisonMetric::Mse),
+			"rmse" => Ok(ComparisonMetric::Rmse),
+			"r2" => Ok(ComparisonMetric::R2),
+			"accuracy" => Ok(ComparisonMetric::Accuracy),
+			"auc" => Ok(ComparisonMetric::Auc),
+			"f1" => Ok(ComparisonMetric::F1),
+			&_ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+				"invalid variant type {}",
+				ty,
+			))),
+		}
+	}
+}
+
+impl Into<tangram_core::config::ComparisonMetric> for ComparisonMetric {
+	fn into(self) -> tangram_core::config::ComparisonMetric {
+		match self {
+			ComparisonMetric::Mae => tangram_core::config::ComparisonMetric::Mae,
+			ComparisonMetric::Mse => tangram_core::config::ComparisonMetric::Mse,
+			ComparisonMetric::Rmse => tangram_core::config::ComparisonMetric::Rmse,
+			ComparisonMetric::R2 => tangram_core::config::ComparisonMetric::R2,
+			ComparisonMetric::Accuracy => tangram_core::config::ComparisonMetric::Accuracy,
+			ComparisonMetric::Auc => tangram_core::config::ComparisonMetric::Auc,
+			ComparisonMetric::F1 => tangram_core::config::ComparisonMetric::F1,
+		}
+	}
+}
+
+pub fn array_to_rust(obj: &PyAny) -> PyResult<ArrayRef> {
+	// https://github.com/jorgecarleitao/arrow2/blob/aee543eea6fc6bc9d7b79234d6b8304a84d95fd5/arrow-pyarrow-integration-testing/src/lib.rs
+	let array = Box::new(ffi::Ffi_ArrowArray::empty());
+	let schema = Box::new(ffi::Ffi_ArrowSchema::empty());
+
+	let array_ptr = &*array as *const ffi::Ffi_ArrowArray;
+	let schema_ptr = &*schema as *const ffi::Ffi_ArrowSchema;
+
+	obj.call_method1(
+		"_export_to_c",
+		(array_ptr as Py_uintptr_t, schema_ptr as Py_uintptr_t),
+	)?;
+
+	unsafe {
+		let field = ffi::import_field_from_c(schema.as_ref()).unwrap();
+		let array = ffi::import_array_from_c(array, &field).unwrap();
+		Ok(array.into())
 	}
 }

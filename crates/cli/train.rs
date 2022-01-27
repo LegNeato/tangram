@@ -79,11 +79,13 @@ pub fn train(args: TrainArgs) -> Result<()> {
 			_ => bail!("Must provide an output path when using stdin for input!"),
 		};
 		// Load the dataset, compute stats, and prepare for training.
+		// Load the config from the config file, if provided.
+		let config = tangram_core::train::load_config(args.config.as_deref())?;
+
 		let mut trainer = tangram_core::train::Trainer::prepare(
-			tangram_id::Id::generate(),
 			input,
 			&args.target,
-			args.config.as_deref(),
+			config,
 			&mut handle_progress_event,
 		)?;
 		if let Some(progress_thread) = progress_thread.as_mut() {

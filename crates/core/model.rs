@@ -182,6 +182,7 @@ pub enum ComparisonMetric {
 	MulticlassClassification(MulticlassClassificationComparisonMetric),
 }
 
+#[derive(Debug)]
 pub enum Metrics {
 	Regression(tangram_metrics::RegressionMetricsOutput),
 	BinaryClassification(tangram_metrics::BinaryClassificationMetricsOutput),
