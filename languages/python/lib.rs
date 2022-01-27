@@ -23,7 +23,7 @@ fn tangram(py: Python, m: &PyModule) -> PyResult<()> {
 	m.add_class::<BagOfWordsFeatureContribution>()?;
 	m.add_class::<BagOfWordsCosineSimilarityFeatureContribution>()?;
 	m.add_class::<WordEmbeddingFeatureContribution>()?;
-	// m.add_function(wrap_pyfunction!(train_inner, m)?)?;
+	m.add_function(wrap_pyfunction!(train_inner, m)?)?;
 	m.add("PredictInput", predict_input(py)?)?;
 	m.add("PredictOutput", predict_output(py)?)?;
 	m.add("FeatureContributionEntry", feature_contribution_entry(py)?)?;

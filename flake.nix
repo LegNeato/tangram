@@ -197,7 +197,10 @@
             tokenizer
           ]))
           php.packages.composer
-          python3
+          (python3.withPackages (p: with p; [
+            pandas
+            pyarrow
+          ]))
           rpm
           ruby
           rust
