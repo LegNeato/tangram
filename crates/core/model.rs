@@ -191,12 +191,15 @@ pub enum Metrics {
 
 impl Model {
 	pub fn to_path(&self, path: &Path) -> Result<()> {
+		let bytes = self.to_bytes()?;
+		tangram_model::to_path(path, &bytes)?;
+		Ok(())
+	}
+	pub fn to_bytes(&self) -> Result<Vec<u8>> {
 		let mut writer = buffalo::Writer::new();
 		let model = serialize_model(self, &mut writer);
 		writer.write(&model);
-		let bytes = writer.into_bytes();
-		tangram_model::to_path(path, &bytes)?;
-		Ok(())
+		Ok(writer.into_bytes())
 	}
 }
 

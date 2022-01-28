@@ -1060,7 +1060,7 @@ fn train_inner(
 	autogrid: Option<AutoGridOptions>,
 	grid: Option<Vec<GridItem>>,
 	comparison_metric: Option<ComparisonMetric>,
-) -> Model {
+) -> PyResult<Model> {
 	// Construct the dataset
 	let column_names = arrow_arrays
 		.iter()
@@ -1120,7 +1120,17 @@ fn train_inner(
 		}
 		tangram_core::model::ModelInner::MulticlassClassifier(_) => todo!(),
 	}
-	todo!()
+	let model = tangram_core::predict::Model::from(
+		tangram_model::from_bytes(model.to_bytes().unwrap().as_slice()).unwrap(),
+	);
+	let tangram_url = "https://app.tangram.dev".to_owned();
+	let tangram_url = tangram_url.parse().unwrap();
+	let model = Model {
+		model,
+		log_queue: Vec::new(),
+		tangram_url,
+	};
+	Ok(model)
 }
 
 #[derive(Debug, FromPyObject)]
