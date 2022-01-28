@@ -1120,13 +1120,11 @@ fn train_inner(
 		}
 		tangram_core::model::ModelInner::MulticlassClassifier(_) => todo!(),
 	}
-	let model = tangram_core::predict::Model::from(
-		tangram_model::from_bytes(model.to_bytes().unwrap().as_slice()).unwrap(),
-	);
 	let tangram_url = "https://app.tangram.dev".to_owned();
 	let tangram_url = tangram_url.parse().unwrap();
+
 	let model = Model {
-		model,
+		model: model.into(),
 		log_queue: Vec::new(),
 		tangram_url,
 	};
