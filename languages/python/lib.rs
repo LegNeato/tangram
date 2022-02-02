@@ -1112,7 +1112,7 @@ fn train_inner(
 	let train_grid_item_outputs = trainer.train_grid(None, &mut |_| {}).unwrap();
 	let model = trainer
 		.test_and_assemble_model(train_grid_item_outputs, &mut |_| {})
-		.unwrap();
+		.map_err(|err| TangramError(err.into()))?;
 	match &model.inner {
 		tangram_core::model::ModelInner::Regressor(_) => todo!(),
 		tangram_core::model::ModelInner::BinaryClassifier(m) => {
@@ -1121,7 +1121,9 @@ fn train_inner(
 		tangram_core::model::ModelInner::MulticlassClassifier(_) => todo!(),
 	}
 	let tangram_url = "https://app.tangram.dev".to_owned();
-	let tangram_url = tangram_url.parse().unwrap();
+	let tangram_url = tangram_url
+		.parse()
+		.map_err(|_| TangramError(anyhow!("Failed to parse tangram_url")))?;
 
 	let model = Model {
 		model: model.into(),
@@ -1188,8 +1190,8 @@ impl<'source> FromPyObject<'source> for GridItem {
 	fn extract(ob: &'source PyAny) -> PyResult<Self> {
 		let ty: &str = ob.get_item("type")?.extract()?;
 		match ty {
-			"linear" => Ok(GridItem::Linear(ob.extract().unwrap())),
-			"tree" => Ok(GridItem::Tree(ob.extract().unwrap())),
+			"linear" => Ok(GridItem::Linear(ob.extract()?)),
+			"tree" => Ok(GridItem::Tree(ob.extract()?)),
 			&_ => Err(pyo3::exceptions::PyValueError::new_err(format!(
 				"invalid variant type {}",
 				ty,
@@ -1220,19 +1222,19 @@ impl<'source> FromPyObject<'source> for LinearGridItem {
 	fn extract(ob: &'source PyAny) -> PyResult<Self> {
 		let mut linear_grid_item: LinearGridItem = Default::default();
 		if let Ok(item) = ob.get_item("early_stopping_options") {
-			linear_grid_item.early_stopping_options = Some(item.extract().unwrap());
+			linear_grid_item.early_stopping_options = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("l2_regularization") {
-			linear_grid_item.l2_regularization = Some(item.extract().unwrap());
+			linear_grid_item.l2_regularization = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("learning_rate") {
-			linear_grid_item.learning_rate = Some(item.extract().unwrap());
+			linear_grid_item.learning_rate = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("max_epochs") {
-			linear_grid_item.max_epochs = Some(item.extract().unwrap());
+			linear_grid_item.max_epochs = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("n_examples_per_batch") {
-			linear_grid_item.n_examples_per_batch = Some(item.extract().unwrap());
+			linear_grid_item.n_examples_per_batch = Some(item.extract()?);
 		}
 		Ok(linear_grid_item)
 	}
@@ -1272,48 +1274,46 @@ impl<'source> FromPyObject<'source> for TreeGridItem {
 	fn extract(ob: &'source PyAny) -> PyResult<Self> {
 		let mut tree_grid_item: TreeGridItem = Default::default();
 		if let Ok(item) = ob.get_item("binned_features_layout") {
-			tree_grid_item.binned_features_layout = Some(item.extract().unwrap());
+			tree_grid_item.binned_features_layout = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("early_stopping_options") {
-			tree_grid_item.early_stopping_options = Some(item.extract().unwrap());
+			tree_grid_item.early_stopping_options = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("l2_regularization_for_continuous_splits") {
-			tree_grid_item.l2_regularization_for_continuous_splits = Some(item.extract().unwrap());
+			tree_grid_item.l2_regularization_for_continuous_splits = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("l2_regularization_for_discrete_splits") {
-			tree_grid_item.l2_regularization_for_discrete_splits = Some(item.extract().unwrap());
+			tree_grid_item.l2_regularization_for_discrete_splits = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("learning_rate") {
-			tree_grid_item.learning_rate = Some(item.extract().unwrap());
+			tree_grid_item.learning_rate = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("max_depth") {
-			tree_grid_item.max_depth = Some(item.extract().unwrap());
+			tree_grid_item.max_depth = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("max_examples_for_computing_bin_thresholds") {
-			tree_grid_item.max_examples_for_computing_bin_thresholds =
-				Some(item.extract().unwrap());
+			tree_grid_item.max_examples_for_computing_bin_thresholds = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("max_leaf_nodes") {
-			tree_grid_item.max_leaf_nodes = Some(item.extract().unwrap());
+			tree_grid_item.max_leaf_nodes = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("max_rounds") {
-			tree_grid_item.max_rounds = Some(item.extract().unwrap());
+			tree_grid_item.max_rounds = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("max_valid_bins_for_number_features") {
-			tree_grid_item.max_valid_bins_for_number_features = Some(item.extract().unwrap());
+			tree_grid_item.max_valid_bins_for_number_features = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("min_examples_per_node") {
-			tree_grid_item.min_examples_per_node = Some(item.extract().unwrap());
+			tree_grid_item.min_examples_per_node = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("min_gain_to_split") {
-			tree_grid_item.min_gain_to_split = Some(item.extract().unwrap());
+			tree_grid_item.min_gain_to_split = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("min_sum_hessians_per_node") {
-			tree_grid_item.min_sum_hessians_per_node = Some(item.extract().unwrap());
+			tree_grid_item.min_sum_hessians_per_node = Some(item.extract()?);
 		}
 		if let Ok(item) = ob.get_item("smoothing_factor_for_discrete_bin_sorting") {
-			tree_grid_item.smoothing_factor_for_discrete_bin_sorting =
-				Some(item.extract().unwrap());
+			tree_grid_item.smoothing_factor_for_discrete_bin_sorting = Some(item.extract()?);
 		}
 		Ok(tree_grid_item)
 	}
