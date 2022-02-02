@@ -2,11 +2,15 @@ import os
 import json
 import pandas as pd
 import pyarrow as pa
+from pyarrow import csv
 import tangram
 from typing import cast
 
 # Load the csv into a pandas dataframe
 table = pd.read_csv("./heart_disease.csv")
+
+# Load the csv into a pandas dataframe
+table = csv.read_csv("./heart_disease.csv")
 
 # Train a model!
 model = tangram.train(
