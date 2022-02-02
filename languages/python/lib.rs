@@ -963,16 +963,6 @@ enum ColumnType {
 	Text(TextColumn),
 }
 
-impl ColumnType {
-	fn name(&self) -> &str {
-		match self {
-			ColumnType::Number(c) => &c.name,
-			ColumnType::Enum(c) => &c.name,
-			ColumnType::Text(c) => &c.name,
-		}
-	}
-}
-
 #[derive(FromPyObject, Clone, Debug)]
 struct NumberColumn {
 	name: String,
@@ -1076,6 +1066,45 @@ fn train_inner(
 	};
 
 	// Construct the config options
+	let config = make_config(
+		column_types,
+		shuffle_enabled,
+		shuffle_seed,
+		test_fraction,
+		comparison_fraction,
+		autogrid,
+		grid,
+		comparison_metric,
+	);
+
+	let mut trainer =
+		tangram_core::train::Trainer::prepare(dataset, &target, config, &mut |_| {}).unwrap();
+	let train_grid_item_outputs = trainer.train_grid(None, &mut |_| {}).unwrap();
+	let model = trainer
+		.test_and_assemble_model(train_grid_item_outputs, &mut |_| {})
+		.unwrap();
+	// TODO set the url!
+	let tangram_url = "https://app.tangram.dev".to_owned();
+	let tangram_url = tangram_url.parse().unwrap();
+
+	let model = Model {
+		model: model.into(),
+		log_queue: Vec::new(),
+		tangram_url,
+	};
+	Ok(model)
+}
+
+fn make_config(
+	column_types: Option<Vec<ColumnType>>,
+	shuffle_enabled: Option<bool>,
+	shuffle_seed: Option<u64>,
+	test_fraction: Option<f32>,
+	comparison_fraction: Option<f32>,
+	autogrid: Option<AutoGridOptions>,
+	grid: Option<Vec<GridItem>>,
+	comparison_metric: Option<ComparisonMetric>,
+) -> tangram_core::config::Config {
 	let column_types: Option<Vec<tangram_core::config::Column>> =
 		column_types.map(|column_config| {
 			column_config
@@ -1097,8 +1126,7 @@ fn train_inner(
 	if let Some(comparison_fraction) = comparison_fraction {
 		dataset_config.comparison_fraction = comparison_fraction
 	}
-
-	let config = tangram_core::config::Config {
+	tangram_core::config::Config {
 		dataset: dataset_config,
 		features: Default::default(),
 		train: tangram_core::config::Train {
@@ -1106,31 +1134,7 @@ fn train_inner(
 			grid: grid.map(|grid| grid.into_iter().map(Into::into).collect::<Vec<_>>()),
 			comparison_metric: comparison_metric.map(Into::into),
 		},
-	};
-	let mut trainer =
-		tangram_core::train::Trainer::prepare(dataset, &target, config, &mut |_| {}).unwrap();
-	let train_grid_item_outputs = trainer.train_grid(None, &mut |_| {}).unwrap();
-	let model = trainer
-		.test_and_assemble_model(train_grid_item_outputs, &mut |_| {})
-		.map_err(|err| TangramError(err.into()))?;
-	match &model.inner {
-		tangram_core::model::ModelInner::Regressor(_) => todo!(),
-		tangram_core::model::ModelInner::BinaryClassifier(m) => {
-			dbg!(m.test_metrics.auc_roc_approx);
-		}
-		tangram_core::model::ModelInner::MulticlassClassifier(_) => todo!(),
 	}
-	let tangram_url = "https://app.tangram.dev".to_owned();
-	let tangram_url = tangram_url
-		.parse()
-		.map_err(|_| TangramError(anyhow!("Failed to parse tangram_url")))?;
-
-	let model = Model {
-		model: model.into(),
-		log_queue: Vec::new(),
-		tangram_url,
-	};
-	Ok(model)
 }
 
 #[derive(Debug, FromPyObject)]

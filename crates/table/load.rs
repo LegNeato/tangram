@@ -207,6 +207,7 @@ impl Table {
 		options: Options,
 		handle_progress_event: &mut impl FnMut(LoadProgressEvent),
 	) -> Result<Table> {
+		// TODO: how to determine the number of rows?
 		let n_rows = arrow_arrays[0].len();
 		let n_columns = column_names.len();
 
@@ -241,6 +242,7 @@ impl Table {
 							match physical_ty {
 								arrow2::datatypes::PhysicalType::Primitive(primitive) => {
 									match primitive {
+										//TODO we only support Int64 and Float64 primitive datatype
 										arrow2::datatypes::PrimitiveType::Int64 => {
 											TableColumnType::Number
 										}
@@ -249,6 +251,9 @@ impl Table {
 										}
 										_ => unimplemented!(),
 									}
+								}
+								arrow2::datatypes::PhysicalType::Boolean => {
+									todo!()
 								}
 								arrow2::datatypes::PhysicalType::Utf8 => {
 									let array = arrow_array

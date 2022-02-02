@@ -6,8 +6,11 @@ from pyarrow import csv
 import tangram
 from typing import cast
 
+# # Load the csv into a pandas dataframe
+# table = pd.read_csv("./heart_disease.csv")
+
 # Load the csv into a pandas dataframe
-table = pd.read_csv("./heart_disease.csv")
+table = pa.csv.read_csv("./heart_disease.csv")
 
 # Load the csv into a pandas dataframe
 table = csv.read_csv("./heart_disease.csv")
